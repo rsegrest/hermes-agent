@@ -641,6 +641,38 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
         self.assertIn(b"3", adapter._seen_uids)
 
+    def test_fetch_uses_body_peek_to_avoid_marking_messages_read(self):
+        """RFC822 implicitly sets \\Seen on the server; BODY.PEEK[] does not.
+
+        Before this fix, polling with ``(RFC822)`` marked every fetched message as
+        already-read in Gmail/webmail, even though the user never opened it.
+        """
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                return ("OK", [(b"1", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            adapter._fetch_new_messages()
+
+        fetch_calls = [c for c in mock_imap.uid.call_args_list if c.args and c.args[0] == "fetch"]
+        self.assertEqual(len(fetch_calls), 1)
+        self.assertEqual(fetch_calls[0].args[2], "(BODY.PEEK[])")
+        self.assertNotIn("RFC822", fetch_calls[0].args[2])
+
 
 class TestPollLoop(unittest.TestCase):
     """Test the async polling loop."""
